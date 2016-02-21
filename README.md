@@ -1,2 +1,4 @@
 # queuesocket
-Queue based socket implementation for acceptance testing
+Queue based socket implementation for acceptance testing.
+
+
