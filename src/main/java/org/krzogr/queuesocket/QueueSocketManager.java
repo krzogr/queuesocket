@@ -197,11 +197,27 @@ public class QueueSocketManager {
    */
   private QueueStream exchangeStream(final String server, final int port, final QueueStream output,
       final boolean createIfAbsent, final long maxTime, final TimeUnit maxTimeUnit) {
-    String key = getKey(server, port);
-    Exchanger<QueueStream> exchanger = null;
 
     long startTimeMillis = System.currentTimeMillis();
     long maxTimeMillis = maxTimeUnit.toMillis(maxTime);
+
+    Exchanger<QueueStream> exchanger = getExchanger(server, port, createIfAbsent, maxTime, maxTimeUnit);
+
+    if (exchanger != null) {
+      long remainingTimeMillis = Math.max(1, maxTimeMillis - (System.currentTimeMillis() - startTimeMillis));
+      return doExchangeStream(exchanger, output, remainingTimeMillis);
+    } else {
+      return null;
+    }
+  }
+
+  private Exchanger<QueueStream> getExchanger(final String server, final int port, final boolean createIfAbsent,
+      final long maxTime, final TimeUnit maxTimeUnit) {
+    long startTimeMillis = System.currentTimeMillis();
+    long maxTimeMillis = maxTimeUnit.toMillis(maxTime);
+
+    Exchanger<QueueStream> exchanger = null;
+    String key = getKey(server, port);
 
     while (exchanger == null) {
       exchanger = exchangers.get(key);
@@ -219,9 +235,13 @@ public class QueueSocketManager {
       }
     }
 
+    return exchanger;
+  }
+
+  private QueueStream doExchangeStream(final Exchanger<QueueStream> exchanger, final QueueStream output,
+      final long timeMillis) {
     try {
-      long remainingTimeMillis = maxTimeMillis - (System.currentTimeMillis() - startTimeMillis);
-      return exchanger.exchange(output, Math.max(remainingTimeMillis, 1), MILLISECONDS);
+      return exchanger.exchange(output, timeMillis, MILLISECONDS);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return null;
