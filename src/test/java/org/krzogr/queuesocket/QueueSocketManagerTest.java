@@ -24,9 +24,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 import org.krzogr.queuesocket.QueueSocketEndpoint;
 import org.krzogr.queuesocket.QueueStream;
+import org.krzogr.queuesocket.QueueSocketManager.QueueSocketType;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 
 /**
  * Contains unit tests for {@link QueueSocketManager} class.
@@ -138,5 +141,15 @@ public class QueueSocketManagerTest extends AbstractQueueSocketTest {
       });
 
     assertResult(result, null);
+  }
+  
+  @Test
+  public void queueSocketTypeEnumTest() {
+    QueueSocketType type = QueueSocketType.valueOf("Client");
+    assertNotNull(type);
+    
+    QueueSocketType[] values = QueueSocketType.values();
+    assertNotNull(values);
+    assertEquals(2, values.length);
   }
 }

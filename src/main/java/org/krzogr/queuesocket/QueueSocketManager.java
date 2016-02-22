@@ -66,9 +66,38 @@ public class QueueSocketManager {
    * 
    * Exchangers are used to swap input and output streams between sockets so that they can communicate with each other.
    */
-  private ConcurrentMap<String, Exchanger<QueueStream>> exchangers = new ConcurrentHashMap<String, Exchanger<QueueStream>>();
+  private ConcurrentMap<String, Exchanger<QueueStreamSlot>> exchangers = new ConcurrentHashMap<String, Exchanger<QueueStreamSlot>>();
 
   private AtomicLong maxConnectTimeMillis = new AtomicLong(SECONDS.toMillis(1));
+
+  /**
+   * Internal type which defines socket type. Used during connection handshake to ensure that only socket of different
+   * types can connect with each other.
+   */
+  static enum QueueSocketType {
+    Client, Server
+  }
+
+  /**
+   * Slot which is exchanged during connection handshake.
+   */
+  static class QueueStreamSlot {
+    private final QueueSocketType type;
+    private final QueueStream stream;
+
+    public QueueStreamSlot(final QueueSocketType type, final QueueStream stream) {
+      this.type = type;
+      this.stream = stream;
+    }
+
+    public QueueSocketType getType() {
+      return type;
+    }
+
+    public QueueStream getStream() {
+      return stream;
+    }
+  }
 
   public static QueueSocketManager getInstance() {
     return INSTANCE;
@@ -113,7 +142,7 @@ public class QueueSocketManager {
    */
   QueueStream exchangeClientSocketStream(final String server, final int port, final QueueStream output,
       final long maxTime, final TimeUnit maxTimeUnit) {
-    return exchangeStream(server, port, output, false, maxTime, maxTimeUnit);
+    return exchangeStream(server, port, output, QueueSocketType.Client, maxTime, maxTimeUnit);
   }
 
   /**
@@ -129,7 +158,7 @@ public class QueueSocketManager {
    */
   QueueStream exchangeServerSocketStream(final String server, final int port, final QueueStream output,
       final long maxTime, final TimeUnit maxTimeUnit) {
-    return exchangeStream(server, port, output, true, maxTime, maxTimeUnit);
+    return exchangeStream(server, port, output, QueueSocketType.Server, maxTime, maxTimeUnit);
   }
 
   /**
@@ -144,12 +173,12 @@ public class QueueSocketManager {
    */
   public QueueSocketEndpoint connect(final String server, final int port, final long maxTime, final TimeUnit maxTimeUnit) {
     QueueStream output = new QueueStream();
-    QueueStream input = exchangeStream(server, port, output, false, maxTime, maxTimeUnit);
+    QueueStream input = exchangeStream(server, port, output, QueueSocketType.Client, maxTime, maxTimeUnit);
     return input != null ? new QueueSocketEndpoint(server, port, input, output) : null;
   }
 
   /**
-   * Should be called by the application which wishes to accept connecting queue client socket.
+   * Should be called by the application which wishes to accept connection from queue client socket.
    * 
    * @param server Server which connection should be accepted for.
    * @param port Port which the connection should be accepted for.
@@ -160,7 +189,7 @@ public class QueueSocketManager {
    */
   public QueueSocketEndpoint accept(final String server, final int port, final long maxTime, final TimeUnit maxTimeUnit) {
     QueueStream output = new QueueStream();
-    QueueStream input = exchangeStream(server, port, output, true, maxTime, maxTimeUnit);
+    QueueStream input = exchangeStream(server, port, output, QueueSocketType.Server, maxTime, maxTimeUnit);
     return input != null ? new QueueSocketEndpoint(server, port, input, output) : null;
   }
 
@@ -179,7 +208,7 @@ public class QueueSocketManager {
       serverStr = LOCALHOST;
     }
 
-    return (serverStr.toLowerCase(Locale.ROOT) + ":" + port).toUpperCase(Locale.ROOT);
+    return (serverStr + ":" + port).toUpperCase(Locale.ROOT);
   }
 
   /**
@@ -190,58 +219,27 @@ public class QueueSocketManager {
    * @param server Server which sockets connect to.
    * @param port Port which sockets connect to.
    * @param output Output stream which the caller will use to write the data to.
-   * @param createIfAbsent TRUE if the specified exchanger should be created if missing.
+   * @param type Type of socket which is connecting.
    * @param maxTime Maximum time to wait for the connection.
    * @param maxTimeUnit Time unit.
    * @return Input stream which the caller will use to read data from.
    */
   private QueueStream exchangeStream(final String server, final int port, final QueueStream output,
-      final boolean createIfAbsent, final long maxTime, final TimeUnit maxTimeUnit) {
+      final QueueSocketType type, final long maxTime, final TimeUnit maxTimeUnit) {
 
-    long startTimeMillis = System.currentTimeMillis();
-    long maxTimeMillis = maxTimeUnit.toMillis(maxTime);
+    Exchanger<QueueStreamSlot> exchanger = exchangers.computeIfAbsent(getKey(server, port),
+        (s) -> new Exchanger<QueueStreamSlot>());
 
-    Exchanger<QueueStream> exchanger = getExchanger(server, port, createIfAbsent, maxTime, maxTimeUnit);
-
-    if (exchanger != null) {
-      long remainingTimeMillis = Math.max(1, maxTimeMillis - (System.currentTimeMillis() - startTimeMillis));
-      return doExchangeStream(exchanger, output, remainingTimeMillis);
-    } else {
-      return null;
-    }
-  }
-
-  private Exchanger<QueueStream> getExchanger(final String server, final int port, final boolean createIfAbsent,
-      final long maxTime, final TimeUnit maxTimeUnit) {
-    long startTimeMillis = System.currentTimeMillis();
-    long maxTimeMillis = maxTimeUnit.toMillis(maxTime);
-
-    Exchanger<QueueStream> exchanger = null;
-    String key = getKey(server, port);
-
-    while (exchanger == null) {
-      exchanger = exchangers.get(key);
-
-      if (exchanger == null && createIfAbsent) {
-        exchanger = exchangers.computeIfAbsent(key, (s) -> new Exchanger<QueueStream>());
-      }
-
-      if (exchanger == null) {
-        QueueSocketUtils.delayQuietly(SLEEP_TIME_MILLIS, MILLISECONDS);
-
-        if (System.currentTimeMillis() - startTimeMillis >= maxTimeMillis || Thread.currentThread().isInterrupted()) {
-          return null;
-        }
-      }
-    }
-
-    return exchanger;
-  }
-
-  private QueueStream doExchangeStream(final Exchanger<QueueStream> exchanger, final QueueStream output,
-      final long timeMillis) {
     try {
-      return exchanger.exchange(output, timeMillis, MILLISECONDS);
+      QueueStreamSlot mySlot = new QueueStreamSlot(type, output);
+      QueueStreamSlot otherSlot = exchanger.exchange(mySlot, maxTimeUnit.toMillis(maxTime), MILLISECONDS);
+
+      if (mySlot.getType() != otherSlot.getType()) {
+        // Only sockets of different types can connect with each other (Client-Server)
+        return otherSlot.getStream();
+      } else {
+        return null;
+      }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return null;

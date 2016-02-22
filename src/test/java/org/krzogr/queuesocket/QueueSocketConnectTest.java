@@ -222,6 +222,37 @@ public class QueueSocketConnectTest extends AbstractQueueSocketTest {
   }
 
   @Test
+  public void socketConnectFailsIfEndpointConnectIsCalled() throws Exception {
+    Future<Object> result = runInThread(() -> {
+      Socket socket = new Socket();
+      socket.connect(new InetSocketAddress("localhost", 2030), 500);
+      return true;
+    });
+
+    QueueSocketEndpoint endpoint = manager.connect("localhost", 2030, 1, SECONDS);
+    assertNull(endpoint);
+    
+    assertFailure(result, IOException.class, "Cannot connect socket");
+  }
+
+  @Test
+  public void socketAcceptFailsIfEndpointAcceptIsCalled() throws Exception {
+    AtomicReference<ServerSocket> socketRef = new AtomicReference<>();
+    
+    runInThread(() -> {
+      ServerSocket socket = new ServerSocket(2030);
+      socketRef.set(socket);
+      socket.accept();
+      return true;
+    });
+
+    QueueSocketEndpoint endpoint = manager.accept("localhost", 2030, 1, SECONDS);
+    assertNull(endpoint);
+
+    socketRef.get().close();
+  }
+  
+  @Test
   public void socketImplConnectFailsIfSocketIsClosedInTheMeantime() throws Exception {
     final CountDownLatch socketAboutToConnect = new CountDownLatch(1);
     final AtomicReference<QueueSocket> socketRef = new AtomicReference<QueueSocket>();
