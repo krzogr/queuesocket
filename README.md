@@ -14,7 +14,7 @@ Requirements:
 mvn install
 ```
 
-# Sample Usage
+# Example
 
 ```java
   @Test
